@@ -117,11 +117,9 @@ export default function Home() {
 
           <div className="hero-actions">
             <Link to="/docs/table-of-contents" className="hero-btn-primary">
-              <span className="hero-btn-icon">\uD83D\uDCDA</span>
               Start Learning
             </Link>
             <Link to="/docs/chapter6-physical-ai" className="hero-btn-secondary">
-              <span className="hero-btn-icon">\uD83D\uDCC4</span>
               View Curriculum
             </Link>
           </div>
@@ -221,11 +219,9 @@ export default function Home() {
           </p>
           <div className="hero-actions">
             <Link to="/ChatPage" className="hero-btn-primary">
-              <span className="hero-btn-icon">\uD83D\uDCAC</span>
               Ask AI Assistant
             </Link>
             <Link to="/docs/table-of-contents" className="hero-btn-secondary">
-              <span className="hero-btn-icon">\uD83D\uDCDA</span>
               Browse Chapters
             </Link>
           </div>
