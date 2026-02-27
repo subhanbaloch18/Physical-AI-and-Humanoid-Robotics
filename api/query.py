@@ -3,7 +3,7 @@ Vercel Serverless Function for RAG Query API.
 
 This function handles POST requests to /api/query and performs:
 1. Embeds the user query using Cohere
-2. Searches Qdrant vector database for relevant context
+2. Searches Pinecone vector database for relevant context
 3. Generates a response using Groq (or OpenAI) with the retrieved context
 """
 
@@ -16,9 +16,8 @@ import requests as http_requests
 
 
 # Config
-QDRANT_URL = os.environ.get("QDRANT_URL", "")
-QDRANT_API_KEY = os.environ.get("QDRANT_API_KEY", "")
-COLLECTION_NAME = os.environ.get("QDRANT_COLLECTION_NAME", "rag_embedding")
+PINECONE_API_KEY = os.environ.get("PINECONE_API_KEY", "")
+PINECONE_HOST = os.environ.get("PINECONE_HOST", "").rstrip("/")
 COHERE_API_KEY = os.environ.get("COHERE_API_KEY", "")
 
 # LLM Provider (Groq or OpenAI)
@@ -94,32 +93,34 @@ def embed_query(query_text):
     return resp.json()["embeddings"][0]
 
 
-def search_qdrant(query_embedding, top_k=None):
-    """Search Qdrant for relevant context chunks via HTTP."""
+def search_pinecone(query_embedding, top_k=None):
+    """Search Pinecone for relevant context chunks via HTTP."""
     k = top_k or TOP_K
     resp = http_requests.post(
-        f"{QDRANT_URL}/collections/{COLLECTION_NAME}/points/search",
+        f"{PINECONE_HOST}/query",
         headers={
-            "api-key": QDRANT_API_KEY,
+            "Api-Key": PINECONE_API_KEY,
             "Content-Type": "application/json",
         },
         json={
             "vector": query_embedding,
-            "limit": k,
-            "score_threshold": SIMILARITY_THRESHOLD,
-            "with_payload": True,
+            "topK": k,
+            "includeMetadata": True,
+            "namespace": "",
         },
         timeout=30,
     )
     resp.raise_for_status()
-    return resp.json().get("result", [])
+    matches = resp.json().get("matches", [])
+    # Apply similarity threshold (Pinecone doesn't filter server-side)
+    return [m for m in matches if m.get("score", 0) >= SIMILARITY_THRESHOLD]
 
 
 def generate_response(query, context_chunks, system_prompt):
     """Generate a response using Groq/OpenAI via HTTP."""
     context_parts = []
     for i, chunk in enumerate(context_chunks):
-        payload = chunk.get("payload", {})
+        payload = chunk.get("metadata", {})
         title = payload.get("title", "Unknown")
         text = payload.get("text", "")
         context_parts.append(f"[Source {i + 1}: {title}]\n{text}")
@@ -185,15 +186,15 @@ class handler(BaseHTTPRequestHandler):
 
             # RAG Pipeline
             query_embedding = embed_query(query)
-            search_results = search_qdrant(query_embedding, top_k=top_k)
+            search_results = search_pinecone(query_embedding, top_k=top_k)
             system_prompt = get_system_prompt(query_type, selected_text, query_mode)
             answer = generate_response(query, search_results, system_prompt)
 
-            # Build sources
+            # Build sources (Pinecone uses "metadata" instead of "payload")
             sources = []
             similarity_scores = []
             for result in search_results:
-                payload = result.get("payload", {})
+                payload = result.get("metadata", {})
                 sources.append({
                     "chunk_id": str(result.get("id", "")),
                     "content": payload.get("text", "")[:200],

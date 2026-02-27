@@ -18,9 +18,8 @@ import requests
 env_path = Path(__file__).resolve().parent / ".env"
 load_dotenv(env_path)
 
-QDRANT_URL = os.getenv("QDRANT_URL", "")
-QDRANT_API_KEY = os.getenv("QDRANT_API_KEY", "")
-COLLECTION_NAME = os.getenv("QDRANT_COLLECTION_NAME", "rag_embedding")
+PINECONE_API_KEY = os.getenv("PINECONE_API_KEY", "")
+PINECONE_HOST = os.getenv("PINECONE_HOST", "").rstrip("/")
 COHERE_API_KEY = os.getenv("COHERE_API_KEY", "")
 
 DOCS_DIR = Path(__file__).resolve().parent.parent / "my-website" / "docs"
@@ -144,52 +143,30 @@ def embed_texts(texts: list) -> list:
     return resp.json()["embeddings"]
 
 
-def ensure_collection():
-    """Create Qdrant collection if it doesn't exist."""
-    # Check if collection exists
+def validate_pinecone():
+    """Validate connection to Pinecone index."""
     resp = requests.get(
-        f"{QDRANT_URL}/collections/{COLLECTION_NAME}",
-        headers={"api-key": QDRANT_API_KEY},
-        timeout=10,
-    )
-
-    if resp.status_code == 200:
-        result = resp.json().get("result", {})
-        points = result.get("points_count", 0)
-        print(f"Collection '{COLLECTION_NAME}' exists with {points} points.")
-        return True
-
-    # Create collection
-    print(f"Creating collection '{COLLECTION_NAME}'...")
-    resp = requests.put(
-        f"{QDRANT_URL}/collections/{COLLECTION_NAME}",
-        headers={
-            "api-key": QDRANT_API_KEY,
-            "Content-Type": "application/json",
-        },
-        json={
-            "vectors": {
-                "size": EMBEDDING_DIM,
-                "distance": "Cosine",
-            }
-        },
+        f"{PINECONE_HOST}/describe_index_stats",
+        headers={"Api-Key": PINECONE_API_KEY},
         timeout=10,
     )
     resp.raise_for_status()
-    print(f"Collection '{COLLECTION_NAME}' created.")
+    stats = resp.json()
+    total = stats.get("totalVectorCount", 0)
+    print(f"Pinecone index reachable. Current vector count: {total}")
     return True
 
 
-def upload_to_qdrant(chunks: list, embeddings: list):
-    """Upload embedded chunks to Qdrant."""
-    points = []
+def upload_to_pinecone(chunks: list, embeddings: list):
+    """Upload embedded chunks to Pinecone."""
+    vectors = []
     for chunk, embedding in zip(chunks, embeddings):
         # Generate a deterministic ID from content
         point_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, chunk["text"][:200]))
-        points.append({
+        vectors.append({
             "id": point_id,
-            "vector": embedding,
-            "payload": {
+            "values": embedding,
+            "metadata": {
                 "text": chunk["text"],
                 "title": chunk["title"],
                 "section": chunk["section"],
@@ -201,19 +178,19 @@ def upload_to_qdrant(chunks: list, embeddings: list):
 
     # Upload in batches of 100
     batch_size = 100
-    for i in range(0, len(points), batch_size):
-        batch = points[i:i + batch_size]
-        resp = requests.put(
-            f"{QDRANT_URL}/collections/{COLLECTION_NAME}/points",
+    for i in range(0, len(vectors), batch_size):
+        batch = vectors[i:i + batch_size]
+        resp = requests.post(
+            f"{PINECONE_HOST}/vectors/upsert",
             headers={
-                "api-key": QDRANT_API_KEY,
+                "Api-Key": PINECONE_API_KEY,
                 "Content-Type": "application/json",
             },
-            json={"points": batch},
+            json={"vectors": batch, "namespace": ""},
             timeout=30,
         )
         resp.raise_for_status()
-        print(f"  Uploaded batch {i // batch_size + 1} ({len(batch)} points)")
+        print(f"  Uploaded batch {i // batch_size + 1} ({len(batch)} vectors)")
 
 
 def main():
@@ -222,28 +199,27 @@ def main():
     print("=" * 60)
 
     # Check config
-    if not QDRANT_URL:
-        print("ERROR: QDRANT_URL not set!")
+    if not PINECONE_API_KEY:
+        print("ERROR: PINECONE_API_KEY not set!")
         return
-    if not QDRANT_API_KEY:
-        print("ERROR: QDRANT_API_KEY not set!")
+    if not PINECONE_HOST:
+        print("ERROR: PINECONE_HOST not set!")
         return
     if not COHERE_API_KEY:
         print("ERROR: COHERE_API_KEY not set!")
         return
 
-    print(f"Qdrant URL: {QDRANT_URL[:50]}...")
-    print(f"Collection: {COLLECTION_NAME}")
+    print(f"Pinecone Host: {PINECONE_HOST[:60]}...")
     print(f"Docs dir: {DOCS_DIR}")
     print()
 
-    # Step 1: Ensure collection exists
-    print("[1/4] Checking Qdrant collection...")
+    # Step 1: Validate Pinecone connection
+    print("[1/4] Checking Pinecone index...")
     try:
-        ensure_collection()
+        validate_pinecone()
     except Exception as e:
-        print(f"ERROR connecting to Qdrant: {e}")
-        print("Make sure your Qdrant cluster is active at https://cloud.qdrant.io")
+        print(f"ERROR connecting to Pinecone: {e}")
+        print("Make sure your Pinecone index is created at https://app.pinecone.io")
         return
 
     # Step 2: Parse all markdown files
@@ -277,11 +253,11 @@ def main():
 
     print(f"  Generated {len(all_embeddings)} embeddings")
 
-    # Step 4: Upload to Qdrant
-    print("\n[4/4] Uploading to Qdrant...")
-    upload_to_qdrant(all_chunks, all_embeddings)
+    # Step 4: Upload to Pinecone
+    print("\n[4/4] Uploading to Pinecone...")
+    upload_to_pinecone(all_chunks, all_embeddings)
 
-    print(f"\nDone! Ingested {len(all_chunks)} chunks into '{COLLECTION_NAME}'.")
+    print(f"\nDone! Ingested {len(all_chunks)} chunks into Pinecone.")
     print("Your RAG agent should now be able to answer questions about the book!")
 
 
